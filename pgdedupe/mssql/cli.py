@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
-
+# encoding=utf8
 """
 Based on: https://github.com/datamade/dedupe-examples/tree/master/pgsql_big_dedupe_example
 """
+# DO THIS BEFORE RUNNING THE APP https://stackoverflow.com/a/35177906
+
+
 import collections
-import csv
+import unicodecsv as csv
 import logging
 import os
 import random
 import sys
 import tempfile
 import time
+import codecs
 
 import dedupe
 
@@ -19,7 +23,7 @@ import numpy
 import pymssql
 
 sys.path.append(os.path.abspath('pgdedupe'))
-from pgdedupe import exact_matches
+import exact_matches
 
 START_TIME = time.time()
 PYTHON_VERSION = sys.version_info[0]
@@ -114,7 +118,9 @@ def unicode_to_str(data):
         data = None
     if PYTHON_VERSION < 3:
         if isinstance(data, basestring):
-            return str(data)
+            #print data
+            return data.encode('utf8')
+            #return str(data)
         elif isinstance(data, collections.Mapping):
             return dict(map(unicode_to_str, data.iteritems()))
         elif isinstance(data, collections.Iterable):
@@ -123,7 +129,7 @@ def unicode_to_str(data):
             return data
     else:
         if isinstance(data, str):
-            return str(data)
+            return data
         elif isinstance(data, collections.Mapping):
             return dict(map(unicode_to_str, data.items()))
         elif isinstance(data, collections.Iterable):
@@ -165,15 +171,21 @@ def preprocess(con, config):
     c.execute("IF OBJECT_ID('{schema}.entries_src_ids', 'U') IS NOT NULL "
               "DROP TABLE {schema}.entries_src_ids".format(**config))
 
-    c.execute("CREATE INDEX table_column_idx "
-              " ON {table} ({key}, {columns})".format(**config))
     c.execute("CREATE INDEX {schema}_entries_unique_column_idx "
               " ON {schema}.entries_unique (_unique_id, {columns})".format(**config))
+
+    # TAKES MORE TIME BUT MORE ACCURATE
+    #c.execute("""SELECT t._unique_id, {table}.{key} INTO {schema}.entries_src_ids
+    #                FROM {schema}.entries_unique as t, {table}
+    #                WHERE {stuff_condition}"""
+    #          .format(**config))
+
+    # TAKES LESS TIME
     c.execute("""SELECT t._unique_id, {table}.{key} INTO {schema}.entries_src_ids
                     FROM {schema}.entries_unique as t, {table}
-                    WHERE
-                    BINARY_CHECKSUM({column_select_table}) = BINARY_CHECKSUM({column_select_t})"""
+                    WHERE BINARY_CHECKSUM({column_select_table}) = BINARY_CHECKSUM({column_select_t})"""
               .format(**config))
+
 
     con.commit()
 
@@ -199,6 +211,7 @@ def train(con, config):
                    FROM {schema}.entries_unique
                    ORDER BY _unique_id""".format(**config))
     temp_d = dict((i, unicode_to_str(row)) for i, row in enumerate(cur))
+    #temp_d = dict((i, (row)) for i, row in enumerate(cur))
 
     deduper.sample(temp_d, 75000)
 
@@ -262,6 +275,7 @@ def create_blocking(deduper, con, config):
         c2 = con.cursor(as_dict=True)
         c2.execute("SELECT DISTINCT {0} FROM {schema}.entries_unique".format(field, **config))
         field_data = (unicode_to_str(row)[field] for row in c2)
+        #field_data = ((row)[field] for row in c2)
         deduper.blocker.index(field_data, field)
         c2.close()
 
@@ -271,18 +285,20 @@ def create_blocking(deduper, con, config):
 
     c3 = con.cursor(as_dict=True)
     c3.execute("SELECT {all_columns} FROM {schema}.entries_unique".format(**config))
+
     full_data = ((row['_unique_id'], unicode_to_str(row)) for row in c3)
+    #full_data = ((row['_unique_id'], (row)) for row in c3)
     b_data = deduper.blocker(full_data)
 
     # Write out blocking map to CSV so we can quickly load in with
-    csv_file = tempfile.NamedTemporaryFile(prefix='blocks_', delete=False, mode='w')
+    csv_file = tempfile.NamedTemporaryFile(prefix='blocks_', delete=False, mode='wb')
     csv_writer = csv.writer(csv_file)
     csv_writer.writerows(b_data)
     c3.close()
     csv_file.close()
 
     # write from csv to SQL
-    with open(csv_file.name, 'r') as f:
+    with open(csv_file.name, 'rb') as f:
         reader = csv.reader(f)
         data = next(reader)
         query = "INSERT INTO {schema}.blocking_map".format(**config)
@@ -426,7 +442,7 @@ def write_results(clustered_dupes, con, config):
               " cluster_score FLOAT, PRIMARY KEY(_unique_id))".format(**config))
 
     csv_file = tempfile.NamedTemporaryFile(prefix='entity_map_', delete=False,
-                                           mode='w')
+                                           mode='wb')
     csv_writer = csv.writer(csv_file)
 
     for cluster, scores in clustered_dupes:
@@ -437,7 +453,7 @@ def write_results(clustered_dupes, con, config):
     csv_file.close()
 
     # write from csv to SQL
-    with open(csv_file.name, 'r') as f:
+    with open(csv_file.name, 'rb') as f:
         reader = csv.reader(f)
         data = next(reader)
         query = "INSERT INTO {schema}.entity_map".format(**config)
@@ -517,9 +533,16 @@ def apply_results(con, config):
                                   cols, config['schema'], con)
 
     c.execute("ALTER TABLE {table} ADD dedupe_id INT".format(**config))
+
+    # TAKES MORE TIME BUT MORE ACCURATE
+    #c.execute("UPDATE {table} SET dedupe_id = t.dedupe_id "
+    #          "FROM {schema}.entries_unique AS t WHERE "
+    #          "{stuff_condition}"
+    #          .format(**config))    
+
     c.execute("UPDATE {table} SET dedupe_id = t.dedupe_id "
-              "FROM {schema}.entries_unique AS t WHERE "
-              "BINARY_CHECKSUM({column_select_table}) = BINARY_CHECKSUM({column_select_t})"
+              "FROM {schema}.entries_unique AS t "
+              "WHERE BINARY_CHECKSUM({column_select_table}) = BINARY_CHECKSUM({column_select_t})"
               .format(**config))
 
     con.commit()

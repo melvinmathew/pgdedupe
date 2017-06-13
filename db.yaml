@@ -1,0 +1,5 @@
+user: MED\melvinm
+password: 987654321spoj
+database: DATANEXUS_test
+host: calv-sc-ctsidb.med.usc.edu
+type: mssql

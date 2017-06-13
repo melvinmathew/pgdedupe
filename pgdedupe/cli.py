@@ -26,7 +26,7 @@ import yaml
 sys.path.append(os.path.abspath('pgdedupe'))
 sys.path.append(os.path.abspath('pgdedupe/mssql'))
 
-from pgdedupe import exact_matches
+import exact_matches
 from mssql import cli as mscli
 
 START_TIME = time.time()
